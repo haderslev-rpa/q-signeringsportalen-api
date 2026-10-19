@@ -11,7 +11,7 @@ from uuid import UUID
 
 import httpx
 
-from configuration import (
+from q_signeringsportalen_api.configuration import (
     API_BASE_URL,
     CONNECT_TIMEOUT_SECONDS,
     DEFAULT_WORKFLOW_API_TYPE,
@@ -98,16 +98,30 @@ class SigneringsportalClient:
         if self._owns_http_client:
             self._http.close()
 
-    def test_forbindelse(self) -> dict[str, Any]:
+    def test_forbindelse(
+        self,
+    ) -> dict[str, Any]:
         """
-        Tester både OAuth-tokenet og adgang til Signeringsportalens API.
+        Tester OAuth-tokenet og adgangen til Signeringsportalens API.
 
-        Funktionen kalder GET /Adm/GetAllPending, fordi /Client kan kræve
-        administrative rettigheder.
+        Funktionen kalder GET /Adm/GetAllPending, fordi endpointet
+        /Client kan kræve administrative rettigheder.
 
-        Returnerer Signeringsportalens svar, normalt med:
-        - currentUserId: API-brugerens UUID
-        - pending: API-brugerens afventende workflows
+        Returns:
+            En dictionary med:
+
+            - api_user_id:
+            Den aktuelle Signeringsportal-brugers UUID.
+
+            - pending:
+            En liste med afventende workflows.
+            Listen er tom, hvis API'et returnerer null.
+
+        Bemærk:
+            api_user_id er Signeringsportalens bruger-id.
+            Det er ikke OAuth client_id.
+
+            Funktionen ændrer ingen workflows.
         """
         data = self._request_json(
             "GET",
@@ -116,15 +130,18 @@ class SigneringsportalClient:
 
         if not isinstance(data, dict):
             raise SigneringsportalResponseError(
-                "Forbindelsestesten returnerede ikke et JSON-objekt."
+                "Forbindelsestesten returnerede ikke "
+                "et JSON-objekt."
             )
 
-        current_user_id = data.get("currentUserId")
+        current_user_id = data.get(
+            "currentUserId"
+        )
 
         if current_user_id is None:
             raise SigneringsportalResponseError(
-                "Forbindelsestesten lykkedes, men svaret mangler "
-                "'currentUserId'."
+                "Forbindelsestesten lykkedes, men "
+                "svaret mangler 'currentUserId'."
             )
 
         validated_user_id = require_uuid(
@@ -132,11 +149,17 @@ class SigneringsportalClient:
             "GetAllPending.currentUserId",
         )
 
-        pending = data.get("pending")
+        pending = data.get(
+            "pending"
+        )
 
-        if pending is not None and not isinstance(pending, list):
+        if (
+            pending is not None
+            and not isinstance(pending, list)
+        ):
             raise SigneringsportalResponseError(
-                "GetAllPending.pending forventedes at være en liste eller null."
+                "GetAllPending.pending forventedes "
+                "at være en liste eller null."
             )
 
         logger.info(

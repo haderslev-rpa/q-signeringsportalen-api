@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from automation_server_client import AutomationServer, Credential
 
-from configuration import CREDENTIAL_NAME
+from q_signeringsportalen_api.configuration import CREDENTIAL_NAME
 from .exceptions import SigneringsportalConfigurationError
 
 

@@ -65,7 +65,9 @@ def main() -> None:
             recipient_type = signer.get("type")
 
             print(f"    Underskriver {signer_number}:")
-            print("      Signer-id:", sign_flow.get("id"))
+            print("      SignFlow-id:",
+                    sign_flow.get("id"),
+                )
             print(
                 "      Identifikator:",
                 mask_identifier(

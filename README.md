@@ -27,34 +27,7 @@ Den kaldende proces ejer selv:
 
 Biblioteket ændrer ikke et Automation Server-work item.
 
-## Installation
 
-Tilføj biblioteket som Git-afhængighed i processens `pyproject.toml`:
-
-```toml
-[project]
-dependencies = [
-    "q-signeringsportalen-api",
-]
-
-[tool.uv.sources]
-q-signeringsportalen-api = {
-    git = "INDSÆT_REPOSITORY_URL",
-    branch = "main"
-}
-```
-
-Installer eller opdatér miljøet:
-
-```bash
-uv sync
-```
-
-Ved udvikling i selve repositoryet:
-
-```bash
-uv sync --extra dev
-```
 
 ## Automation Server-credential
 

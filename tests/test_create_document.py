@@ -1,16 +1,19 @@
 """
-Manuel integrationstest af et komplet oprettelsesflow.
+Manuel integrationstest af et komplet oprettelsesflow med mail.
 
 Testen:
-1. Læser tests/testfil.pdf som bytes.
-2. Opretter et rigtigt workflow i Signeringsportalen.
-3. Sender signeringsanmodningen til testmailen fra .env.
-4. Gemmer flow-id og andre testoplysninger i tests/.
-5. Henter workflowets status igen.
+1. Læser testmailen fra .env.
+2. Læser tests/testfil.pdf som bytes.
+3. Opretter et rigtigt workflow i Signeringsportalen.
+4. Sender en rigtig signeringsmail til testmailen.
+5. Henter workflowets status med GetDetails.
+6. Gemmer ufølsomme testoplysninger i tests_local/.
 
 Vigtigt:
 - Testen opretter et rigtigt workflow.
 - Testen sender en rigtig mail.
+- PDF-indhold, bearer-token og credentials gemmes ikke i resultatfilen.
+- Resultatfilen indeholder mailadressen på testmodtageren.
 """
 
 from __future__ import annotations
@@ -22,9 +25,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from q_signeringsportalen_api import (
-    SigneringsportalClient,
-)
+from q_signeringsportalen_api import SigneringsportalClient
 
 
 # ------------------------------------------------------------
@@ -32,14 +33,11 @@ from q_signeringsportalen_api import (
 # ------------------------------------------------------------
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
 ENV_PATH = PROJECT_ROOT / ".env"
-
 PDF_PATH = PROJECT_ROOT / "tests" / "testfil.pdf"
-
+TEST_RESULTS_DIRECTORY = PROJECT_ROOT / "tests_local"
 RESULT_PATH = (
-    PROJECT_ROOT
-    / "tests_local"
+    TEST_RESULTS_DIRECTORY
     / "test_create_document_result.json"
 )
 
@@ -55,10 +53,10 @@ load_dotenv(ENV_PATH)
 # TESTKONFIGURATION
 # ------------------------------------------------------------
 
-TEST_MAIL = (
-    getenv("SIGNERINGSPORTAL_TEST_MAIL", "")
-    .strip()
-)
+TEST_MAIL = getenv(
+    "SIGNERINGSPORTAL_TEST_MAIL",
+    "",
+).strip()
 
 WORKFLOW_NAME = "Automatisering - API test"
 
@@ -78,7 +76,8 @@ def get_test_mail() -> str:
     """
     Returnerer testmailen fra .env.
 
-    Stopper testen, hvis miljøvariablen mangler.
+    Stopper testen, hvis SIGNERINGSPORTAL_TEST_MAIL
+    mangler eller er tom.
     """
     if not TEST_MAIL:
         raise RuntimeError(
@@ -90,7 +89,10 @@ def get_test_mail() -> str:
 
 def load_pdf_bytes() -> bytes:
     """
-    Læser test-PDF'en og returnerer indholdet som bytes.
+    Læser tests/testfil.pdf og returnerer indholdet som bytes.
+
+    Kontrollerer, at filen findes, ikke er tom og begynder
+    med en PDF-header.
     """
     if not PDF_PATH.exists():
         raise FileNotFoundError(
@@ -122,6 +124,7 @@ def load_pdf_bytes() -> bytes:
 def save_result(
     *,
     flow_id: str,
+    sign_flow_id: str | None,
     signer_id: str | None,
     status: str,
     url: str | None,
@@ -129,21 +132,31 @@ def save_result(
     test_mail: str,
 ) -> None:
     """
-    Gemmer testresultatet i tests/ som JSON.
+    Gemmer ufølsomme testoplysninger i tests_local/.
+
+    sign_flow_id og signer_id gemmes som separate felter,
+    fordi de har forskellige formål i Signeringsportalen.
     """
     result = {
         "flow_id": flow_id,
+        "sign_flow_id": sign_flow_id,
         "signer_id": signer_id,
         "status": status,
         "url": url,
+        "recipient_type": "Mail",
         "test_mail": test_mail,
-        "pdf_path": str(PDF_PATH),
+        "source_document": PDF_PATH.name,
         "workflow_name": WORKFLOW_NAME,
         "expires_at": expires_at.isoformat(),
         "created_by_test_at": (
             datetime.now(timezone.utc).isoformat()
         ),
     }
+
+    TEST_RESULTS_DIRECTORY.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     RESULT_PATH.write_text(
         json.dumps(
@@ -163,17 +176,18 @@ def main() -> None:
     test_mail = get_test_mail()
     pdf_bytes = load_pdf_bytes()
 
+    expires_at = (
+        datetime.now(timezone.utc)
+        + timedelta(days=EXPIRY_DAYS)
+    )
+
     print("Starter komplet test af oprettelsesflow.")
     print()
     print("PDF:", PDF_PATH)
     print("Modtager:", test_mail)
     print("Workflow-navn:", WORKFLOW_NAME)
     print("PDF-størrelse:", len(pdf_bytes), "bytes")
-
-    expires_at = (
-        datetime.now(timezone.utc)
-        + timedelta(days=EXPIRY_DAYS)
-    )
+    print("Udløber:", expires_at.isoformat())
 
     print()
     print("Opretter workflow i Signeringsportalen...")
@@ -205,23 +219,21 @@ def main() -> None:
         print()
         print("Henter workflowets status...")
 
-        workflow_status = (
-            client.hent_signeringsstatus(
-                create_result.flow_id
-            )
+        workflow_status = client.hent_signeringsstatus(
+            create_result.flow_id
         )
 
+    sign_flow_id = None
     signer_id = None
 
     if workflow_status.underskrivere:
-        signer_id = (
-            workflow_status
-            .underskrivere[0]
-            .signer_id
-        )
+        first_signer = workflow_status.underskrivere[0]
+        sign_flow_id = first_signer.sign_flow_id
+        signer_id = first_signer.signer_id
 
     save_result(
         flow_id=workflow_status.flow_id,
+        sign_flow_id=sign_flow_id,
         signer_id=signer_id,
         status=workflow_status.status,
         url=workflow_status.url,
@@ -236,6 +248,12 @@ def main() -> None:
     print("  Status:", workflow_status.status)
     print("  URL:", workflow_status.url)
     print("  Udløber:", workflow_status.udloeber)
+    print("  Er signeret:", workflow_status.er_signeret)
+    print("  Afventer:", workflow_status.afventer)
+    print(
+        "  Afsluttet uden signatur:",
+        workflow_status.er_afsluttet_uden_signatur,
+    )
 
     print()
     print(
@@ -249,23 +267,15 @@ def main() -> None:
     ):
         print()
         print(f"Underskriver {number}:")
+        print("  SignFlow-id:", signer.sign_flow_id)
         print("  Signer-id:", signer.signer_id)
-        print(
-            "  Identifikator:",
-            signer.identifikator,
-        )
-        print(
-            "  Modtagertype:",
-            signer.modtagertype,
-        )
+        print("  Identifikator:", signer.identifikator)
+        print("  Modtagertype:", signer.modtagertype)
         print("  Status:", signer.status)
         print("  Udløber:", signer.udloeber)
 
     print()
-    print(
-        "Testresultatet er gemt i:",
-        RESULT_PATH,
-    )
+    print("Testresultatet er gemt i:", RESULT_PATH)
 
 
 if __name__ == "__main__":

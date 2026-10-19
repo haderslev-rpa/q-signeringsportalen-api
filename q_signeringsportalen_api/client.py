@@ -61,8 +61,32 @@ class SigneringsportalClient:
         self._token_expires_monotonic = 0.0
 
     @classmethod
-    def from_automation_server(cls) -> SigneringsportalClient:
-        return cls(hent_oauth_credentials())
+    def from_automation_server(
+        cls,
+    ) -> SigneringsportalClient:
+        """
+        Opretter en klient med credentials fra Automation Server.
+
+        Credentialet hentes med navnet fra configuration.py.
+        Det skal indeholde:
+
+        - client_id i credentialets Data JSON
+        - client_secret i credentialets password-felt
+
+        Access-tokenet hentes først, når klienten foretager
+        sit første API-kald.
+
+        Returns:
+            En initialiseret SigneringsportalClient.
+
+        Raises:
+            SigneringsportalConfigurationError:
+                Hvis credentialet mangler client_id eller
+                client_secret.
+        """
+        return cls(
+            hent_oauth_credentials()
+        )
 
     def __enter__(self) -> SigneringsportalClient:
         return self
@@ -274,19 +298,99 @@ class SigneringsportalClient:
             flow_id=flow_id,
         )
 
-    def hent_signeringsstatus(self, flow_id: str) -> Signeringsstatus:
-        validated_flow_id = require_uuid(flow_id, "flow_id")
-        data = self._request_json("GET", "/Adm/GetDetails", params={"flowId": validated_flow_id})
+    def hent_signeringsstatus(
+        self,
+        flow_id: str,
+    ) -> Signeringsstatus:
+        """
+        Henter den aktuelle status for ét workflow.
+
+        Funktionen kalder GetDetails og returnerer en normaliseret
+        Signeringsstatus-model. Modellen indeholder både workflowets
+        samlede status og status for hver underskriver.
+
+        Args:
+            flow_id:
+                Workflowets id fra opret_signeringsopgave().
+
+        Returns:
+            En Signeringsstatus med blandt andet:
+
+            - flow_id
+            - navn
+            - status
+            - url
+            - udloeber
+            - underskrivere
+            - raw
+
+        Mulige workflowstatusser:
+            - Pending
+            - Signed
+            - Inactive
+            - Expired
+            - Deleted
+
+        Bemærk:
+            Funktionen ændrer ikke workflowet og gemmer ikke noget
+            i Automation Server.
+
+            Underskriverens signer_id skal bruges ved
+            send_paamindelse(). sign_flow_id må ikke bruges som
+            erstatning for signer_id.
+
+        Raises:
+            SigneringsportalValidationError:
+                Hvis flow_id ikke er et gyldigt UUID.
+
+            SigneringsportalResponseError:
+                Hvis svaret mangler workflow eller signFlows.
+        """
+        validated_flow_id = require_uuid(
+            flow_id,
+            "flow_id",
+        )
+
+        data = self._request_json(
+            "GET",
+            "/Adm/GetDetails",
+            params={
+                "flowId": validated_flow_id,
+            },
+        )
+
         if not isinstance(data, dict):
-            raise SigneringsportalResponseError("GetDetails returnerede ikke et objekt.")
+            raise SigneringsportalResponseError(
+                "GetDetails returnerede ikke et objekt."
+            )
+
         workflow = data.get("workFlow")
+
         if not isinstance(workflow, dict):
-            raise SigneringsportalResponseError("GetDetails mangler workFlow.")
-        status = require_text(workflow.get("status"), "workFlow.status")
-        sign_flows = workflow.get("signFlows") or []
+            raise SigneringsportalResponseError(
+                "GetDetails mangler workFlow."
+            )
+
+        status = require_text(
+            workflow.get("status"),
+            "workFlow.status",
+        )
+
+        sign_flows = (
+            workflow.get("signFlows")
+            or []
+        )
+
         if not isinstance(sign_flows, list):
-            raise SigneringsportalResponseError("workFlow.signFlows er ikke en liste.")
-        parsed_signers = tuple(self._parse_signer_status(item) for item in sign_flows)
+            raise SigneringsportalResponseError(
+                "workFlow.signFlows er ikke en liste."
+            )
+
+        parsed_signers = tuple(
+            self._parse_signer_status(item)
+            for item in sign_flows
+        )
+
         return Signeringsstatus(
             flow_id=validated_flow_id,
             status=status,
@@ -470,45 +574,298 @@ class SigneringsportalClient:
 
         return pdf_bytes
 
-    def send_paamindelse(self, flow_id: str, signer_id: str) -> None:
+    def send_paamindelse(
+        self,
+        flow_id: str,
+        signer_id: str,
+    ) -> None:
+        """
+        Sender en ny besked til én afventende underskriver.
+
+        Args:
+            flow_id:
+                Workflowets id.
+
+            signer_id:
+                Modtagerens id fra:
+
+                    status.underskrivere[n].signer_id
+
+                Brug ikke sign_flow_id. Det er et andet id.
+
+        Returns:
+            None, når API'et returnerer HTTP 204 No Content.
+
+        Anbefalet brug:
+            Hent først status med hent_signeringsstatus().
+            Kontrollér derefter:
+
+            - at workflowet har status Pending
+            - at underskriveren har status Pending
+            - at underskriver.signer_id ikke er None
+
+        Bemærk:
+            Funktionen kontrollerer ikke selv workflow- eller
+            underskriverstatus. Den kaldende proces ejer denne
+            beslutning.
+
+        Raises:
+            SigneringsportalValidationError:
+                Hvis flow_id eller signer_id ikke er gyldigt UUID.
+
+            SigneringsportalApiError:
+                Hvis Signeringsportalen ikke accepterer kaldet.
+        """
         self._request_no_content(
             "POST",
             "/Adm/SendMail",
             json={
-                "workFlowId": require_uuid(flow_id, "flow_id"),
-                "signerId": require_uuid(signer_id, "signer_id"),
+                "workFlowId": require_uuid(
+                    flow_id,
+                    "flow_id",
+                ),
+                "signerId": require_uuid(
+                    signer_id,
+                    "signer_id",
+                ),
             },
         )
 
-    def slet_signeringsopgave(self, flow_id: str) -> None:
-        validated_flow_id = require_uuid(flow_id, "flow_id")
-        self._request_no_content("DELETE", f"/Adm/Delete/{validated_flow_id}")
+    def slet_signeringsopgave(
+        self,
+        flow_id: str,
+    ) -> None:
+        """
+        Sletter ét workflow i Signeringsportalen.
 
-    def kan_modtage_digital_post_cpr(self, cpr: str) -> bool:
-        return self._request_bool("GET", f"/DigitalPost/cpr/{require_text(cpr, 'cpr')}")
+        Args:
+            flow_id:
+                Id'et på det workflow, der skal slettes.
 
-    def kan_modtage_digital_post_cvr(self, cvr: str) -> bool:
-        return self._request_bool("GET", f"/DigitalPost/cvr/{require_text(cvr, 'cvr')}")
+        Returns:
+            None, når API'et returnerer HTTP 204 No Content.
 
-    def hent_afventende_signeringsopgaver(self) -> dict[str, Any]:
-        data = self._request_json("GET", "/Adm/GetAllPending")
+        Bemærk:
+            Funktionen udfører sletningen med det samme.
+            Funktionen spørger ikke om bekræftelse og ændrer ikke
+            processens work item.
+
+            Den kaldende proces skal selv beslutte, om workflowet
+            må slettes.
+
+        Raises:
+            SigneringsportalValidationError:
+                Hvis flow_id ikke er et gyldigt UUID.
+
+            SigneringsportalApiError:
+                Hvis Signeringsportalen afviser sletningen.
+        """
+        validated_flow_id = require_uuid(
+            flow_id,
+            "flow_id",
+        )
+
+        self._request_no_content(
+            "DELETE",
+            f"/Adm/Delete/{validated_flow_id}",
+        )
+
+    def kan_modtage_digital_post_cpr(
+        self,
+        cpr: str,
+    ) -> bool:
+        """
+        Kontrollerer om et CPR-nummer kan modtage Digital Post.
+
+        Args:
+            cpr:
+                Borgerens CPR-nummer som tekst.
+
+        Returns:
+            True, hvis borgeren kan modtage Digital Post.
+            False, hvis borgeren ikke kan modtage Digital Post.
+
+        Bemærk:
+            Funktionen opretter ikke et workflow og sender ikke
+            Digital Post.
+
+            Ved oprettelse skal modtagertypen være DigitalPost.
+        """
+        return self._request_bool(
+            "GET",
+            (
+                "/DigitalPost/cpr/"
+                f"{require_text(cpr, 'cpr')}"
+            ),
+        )
+
+
+    def kan_modtage_digital_post_cvr(
+        self,
+        cvr: str,
+    ) -> bool:
+        """
+        Kontrollerer om et CVR-nummer kan modtage Digital Post.
+
+        Args:
+            cvr:
+                Organisationens CVR-nummer som tekst.
+
+        Returns:
+            True, hvis organisationen kan modtage Digital Post.
+            False, hvis organisationen ikke kan modtage Digital Post.
+
+        Bemærk:
+            Funktionen opretter ikke et workflow og sender ikke
+            Digital Post.
+
+            Ved oprettelse skal modtagertypen være DigitalPostCvr.
+        """
+        return self._request_bool(
+            "GET",
+            (
+                "/DigitalPost/cvr/"
+                f"{require_text(cvr, 'cvr')}"
+            ),
+        )    
+
+    def hent_afventende_signeringsopgaver(
+        self,
+    ) -> dict[str, Any]:
+        """
+        Henter alle afventende workflows, som API-brugeren kan se.
+
+        Returns:
+            Signeringsportalens rå dictionary med:
+
+            - currentUserId
+            - pending
+
+            pending er en liste med workflows eller null.
+
+        Bemærk:
+            Funktionen returnerer rå API-data og ikke
+            Signeringsstatus-modeller.
+
+            Brug hent_signeringsstatus(flow_id), når processen
+            allerede kender det konkrete flow_id.
+
+            Funktionen ændrer ingen workflows.
+        """
+        data = self._request_json(
+            "GET",
+            "/Adm/GetAllPending",
+        )
+
         if not isinstance(data, dict):
-            raise SigneringsportalResponseError("GetAllPending returnerede ikke et objekt.")
+            raise SigneringsportalResponseError(
+                "GetAllPending returnerede ikke et objekt."
+            )
+
         return data
 
-    def hent_underskrevne_signeringsopgaver(self) -> dict[str, Any]:
-        data = self._request_json("GET", "/Adm/GetAllSigned")
+
+    def hent_underskrevne_signeringsopgaver(
+        self,
+    ) -> dict[str, Any]:
+        """
+        Henter alle underskrevne workflows, som API-brugeren kan se.
+
+        Returns:
+            Signeringsportalens rå dictionary med:
+
+            - currentUserId
+            - signed
+
+            signed er en liste med workflows eller null.
+
+        Bemærk:
+            Funktionen returnerer rå API-data og ikke
+            Signeringsstatus-modeller.
+
+            Funktionen henter ikke selve PDF-indholdet. Brug
+            hent_signeret_pdf(flow_id) til at hente den samlede
+            underskrevne PAdES-PDF som bytes.
+
+            Funktionen ændrer ingen workflows.
+        """
+        data = self._request_json(
+            "GET",
+            "/Adm/GetAllSigned",
+        )
+
         if not isinstance(data, dict):
-            raise SigneringsportalResponseError("GetAllSigned returnerede ikke et objekt.")
+            raise SigneringsportalResponseError(
+                "GetAllSigned returnerede ikke et objekt."
+            )
+
         return data
 
-    def hent_api_klienter(self) -> tuple[ApiKlient, ...]:
-        return tuple(self.test_forbindelse())
 
-    def hent_api_klient(self, api_user_id: str) -> ApiKlient:
-        validated_id = require_uuid(api_user_id, "api_user_id")
-        data = self._request_json("GET", f"/Client/{validated_id}")
-        return self._parse_api_klient(data)
+    def hent_api_klienter(
+        self,
+    ) -> tuple[ApiKlient, ...]:
+        """
+        Henter alle API-klienter, som den aktuelle bruger må se.
+
+        Returns:
+            En tuple med ApiKlient-modeller.
+
+        Bemærk:
+            Dette endpoint kan kræve administrative rettigheder.
+            Funktionen må ikke bruges som almindelig
+            forbindelsestest. Brug test_forbindelse() til det.
+        """
+        data = self._request_json(
+            "GET",
+            "/Client",
+        )
+
+        if not isinstance(data, list):
+            raise SigneringsportalResponseError(
+                "GET /Client returnerede ikke en liste."
+            )
+
+        return tuple(
+            self._parse_api_klient(item)
+            for item in data
+        )
+
+    def hent_api_klient(
+        self,
+        api_user_id: str,
+    ) -> ApiKlient:
+        """
+        Henter én API-bruger fra Signeringsportalen.
+
+        Args:
+            api_user_id:
+                Signeringsportalens bruger-id.
+
+                Dette er currentUserId fra eksempelvis
+                test_forbindelse() eller GetAllPending.
+                Det er ikke OAuth client_id.
+
+        Returns:
+            En ApiKlient-model.
+
+        Raises:
+            SigneringsportalValidationError:
+                Hvis api_user_id ikke er et gyldigt UUID.
+        """
+        validated_id = require_uuid(
+            api_user_id,
+            "api_user_id",
+        )
+
+        data = self._request_json(
+            "GET",
+            f"/Client/{validated_id}",
+        )
+
+        return self._parse_api_klient(
+            data
+        )
 
     def opdater_api_klient(
         self,
@@ -517,13 +874,55 @@ class SigneringsportalClient:
         navn: str | None = None,
         mail: str | None = None,
     ) -> ApiKlient:
-        validated_id = require_uuid(api_user_id, "api_user_id")
+        """
+        Opdaterer navn og mailadresse på en API-bruger.
+
+        Args:
+            api_user_id:
+                Signeringsportalens bruger-id.
+                Brug ikke OAuth client_id.
+
+            navn:
+                Nyt visningsnavn. None sender null til API'et.
+
+            mail:
+                Ny mailadresse til kvitteringer.
+                None sender null til API'et.
+
+        Returns:
+            Den opdaterede ApiKlient-model.
+
+        Bemærk:
+            Mailadressen anvendes af Signeringsportalen til
+            kvitteringer for fuldførte workflows.
+        """
+        validated_id = require_uuid(
+            api_user_id,
+            "api_user_id",
+        )
+
         payload = {
-            "name": require_text(navn, "navn") if navn is not None else None,
-            "mail": require_text(mail, "mail") if mail is not None else None,
+            "name": (
+                require_text(navn, "navn")
+                if navn is not None
+                else None
+            ),
+            "mail": (
+                require_text(mail, "mail")
+                if mail is not None
+                else None
+            ),
         }
-        data = self._request_json("PUT", f"/Client/{validated_id}", json=payload)
-        return self._parse_api_klient(data)
+
+        data = self._request_json(
+            "PUT",
+            f"/Client/{validated_id}",
+            json=payload,
+        )
+
+        return self._parse_api_klient(
+            data
+        )
 
     def _get_access_token(self, *, force_refresh: bool = False) -> str:
         now = time.monotonic()
